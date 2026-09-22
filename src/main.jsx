@@ -1,8 +1,11 @@
-//Importar o createRoot
-import {createRoot} from "react-dom/client";
+// Importar o CSS com design system shadcn/ui
+import "./index.css";
+
+// Importar o createRoot
+import { createRoot } from "react-dom/client";
 
 // Importar App.jsx
 import App from "./App";
 
 // Exibir o App.jsx
-createRoot(document.getElementById("root")).render(<App />); 
+createRoot(document.getElementById("root")).render(<App />);
