@@ -90,8 +90,27 @@ const Icons = {
 // Objeto pessoa padrão
 const pessoaVazia = {
   id: "",
+  codigo: "",
   nome: "",
   cidade: ""
+};
+
+// Utilitário para normalizar qualquer objeto vindo da API
+const normalizarPessoa = (item) => {
+  if (!item || typeof item !== "object") return null;
+  const identificador =
+    item.codigo !== undefined && item.codigo !== null && item.codigo !== ""
+      ? item.codigo
+      : item.id !== undefined && item.id !== null && item.id !== ""
+      ? item.id
+      : item._id ?? "";
+  return {
+    ...item,
+    id: identificador,
+    codigo: identificador,
+    nome: item.nome ?? "",
+    cidade: item.cidade ?? ""
+  };
 };
 
 export default function App() {
@@ -105,12 +124,23 @@ export default function App() {
     return localStorage.getItem("theme") === "dark" || window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
 
-  // --- CONFIGURAÇÃO DA API (localhost:8080) ---
-  const [apiUrl, setApiUrl] = useState("http://localhost:8080");
+  // --- CONFIGURAÇÃO DA API (com persistência no localStorage) ---
+  const [apiUrl, setApiUrl] = useState(() => {
+    return localStorage.getItem("pessoa_api_url") || "http://localhost:8080";
+  });
   const [statusConexao, setStatusConexao] = useState("verificando"); // 'online' | 'offline' | 'verificando'
   const [mostrarConfigApi, setMostrarConfigApi] = useState(false);
   const [modalRemover, setModalRemover] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [diagnosticoApi, setDiagnosticoApi] = useState(null);
+  const [testandoDiagnostico, setTestandoDiagnostico] = useState(false);
+
+  // Sincronizar URL da API no localStorage
+  const salvarApiUrl = (novaUrl) => {
+    const urlLimpa = novaUrl.trim().replace(/\/+$/, "");
+    setApiUrl(urlLimpa);
+    localStorage.setItem("pessoa_api_url", urlLimpa);
+  };
 
   // Alternar tema escuro/claro com persistência
   useEffect(() => {
@@ -129,16 +159,37 @@ export default function App() {
     setToasts((prev) => [...prev, { id, titulo, desc, tipo }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
+    }, 4500);
   };
 
-  // --- FUNÇÃO AUXILIAR DE REQUISIÇÃO (Tenta rota raiz e rotas alternativas com inteligência) ---
+  // Função auxiliar para extrair mensagem amigável de erro da resposta HTTP
+  const extrairMensagemErro = async (resposta, fallbackMsg) => {
+    if (!resposta) return fallbackMsg;
+    try {
+      const clone = resposta.clone();
+      const json = await clone.json();
+      if (json.mensagem) return json.mensagem;
+      if (json.message) return json.message;
+      if (json.error) return json.error;
+      if (Array.isArray(json.errors)) return json.errors.join(", ");
+    } catch {
+      try {
+        const texto = await resposta.text();
+        if (texto && texto.length > 0 && texto.length < 200) return texto;
+      } catch {}
+    }
+    return fallbackMsg;
+  };
+
+  // --- FUNÇÃO AUXILIAR DE REQUISIÇÃO ---
   const fetchApi = async (path, options = {}) => {
-    const cleanUrl = apiUrl.replace(/\/+$/, "");
-    return fetch(`${cleanUrl}${path}`, {
+    const baseUrl = apiUrl.trim().replace(/\/+$/, "");
+    const urlFinal = baseUrl.startsWith("/") ? `${baseUrl}${path}` : `${baseUrl}${path}`;
+    return fetch(urlFinal, {
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json"
+        Accept: "application/json",
+        ...(options.headers || {})
       },
       ...options
     });
@@ -149,23 +200,40 @@ export default function App() {
     setCarregando(true);
     setStatusConexao("verificando");
     try {
-      // Tenta rota raiz '/' ou '/pessoas' ou '/listar'
-      let resposta = await fetchApi("/").catch(() => null);
-
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi("/pessoas").catch(() => null);
-      }
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi("/listar").catch(() => null);
+      // Prioridade das rotas Spring Boot / REST:
+      // 1. /listar (clássico do Spring Boot)
+      // 2. / (raiz)
+      // 3. /pessoas
+      let resposta = null;
+      const rotasGet = ["/listar", "/", "/pessoas"];
+      
+      for (const rota of rotasGet) {
+        try {
+          const r = await fetchApi(rota);
+          if (r && r.ok) {
+            resposta = r;
+            break;
+          }
+        } catch {
+          // segue para a próxima rota se houver erro de rede
+        }
       }
 
       if (resposta && resposta.ok) {
         const dados = await resposta.json();
-        const listaArray = Array.isArray(dados) ? dados : (dados.content || []);
-        setPessoas(listaArray);
+        const listaBruta = Array.isArray(dados)
+          ? dados
+          : (dados.content || dados.data || dados.pessoas || []);
+        
+        const listaNormalizada = listaBruta.map(normalizarPessoa).filter(Boolean);
+        setPessoas(listaNormalizada);
         setStatusConexao("online");
         if (mostrarToastSucesso) {
-          dispararToast("Conectado com sucesso", `${listaArray.length} pessoas encontradas no backend.`, "success");
+          dispararToast(
+            "Conectado com sucesso!",
+            `${listaNormalizada.length} registro(s) sincronizados com o backend.`,
+            "success"
+          );
         }
       } else {
         throw new Error("Não foi possível carregar a lista de pessoas.");
@@ -173,8 +241,8 @@ export default function App() {
     } catch (erro) {
       setStatusConexao("offline");
       dispararToast(
-        "Aguardando backend em " + apiUrl,
-        "Inicie seu backend Spring Boot/Java ou certifique-se de que o CORS está habilitado.",
+        "Aguardando conexão com " + apiUrl,
+        "Certifique-se de que sua API está ativa e com CORS liberado (@CrossOrigin), ou use o proxy /api.",
         "error"
       );
     } finally {
@@ -182,7 +250,7 @@ export default function App() {
     }
   };
 
-  // Executa o carregamento inicial
+  // Executa o carregamento inicial ao mudar apiUrl
   useEffect(() => {
     obterPessoas();
   }, [apiUrl]);
@@ -190,7 +258,11 @@ export default function App() {
   // Atualizar campo do formulário
   const atualizarPessoa = (e) => {
     const { name, value } = e.target;
-    setPessoa((prev) => ({ ...prev, [name]: value }));
+    setPessoa((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "id" ? { codigo: value } : {})
+    }));
   };
 
   // --- 2. CADASTRAR PESSOA (POST) ---
@@ -209,43 +281,53 @@ export default function App() {
         cidade: pessoa.cidade.trim()
       };
 
-      // Tenta POST em / ou em /cadastrar ou em /pessoas
-      let resposta = await fetchApi("/", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      }).catch(() => null);
+      // Tenta rotas em ordem comum: /cadastrar (Spring Boot Ralf Lima), /, /pessoas
+      const rotasPost = ["/cadastrar", "/", "/pessoas"];
+      let resposta = null;
+      let erroValidacao = null;
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi("/cadastrar", {
-          method: "POST",
-          body: JSON.stringify(payload)
-        }).catch(() => null);
+      for (const rota of rotasPost) {
+        try {
+          const r = await fetchApi(rota, {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+
+          // Se a API retornou erro de validação (400 ou 422), captura a mensagem direta do Spring Boot
+          if (r && (r.status === 400 || r.status === 422)) {
+            erroValidacao = await extrairMensagemErro(r, "Dados inválidos segundo a API.");
+            resposta = r;
+            break;
+          }
+
+          if (r && (r.ok || r.status === 201 || r.status === 200)) {
+            resposta = r;
+            break;
+          }
+        } catch {
+          // Continua tentando caso haja erro de rota
+        }
       }
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi("/pessoas", {
-          method: "POST",
-          body: JSON.stringify(payload)
-        }).catch(() => null);
+      if (erroValidacao) {
+        dispararToast("Validação da API", erroValidacao, "error");
+        return;
       }
 
       if (resposta && (resposta.ok || resposta.status === 201 || resposta.status === 200)) {
-        let retornado = null;
-        try {
-          retornado = await resposta.json();
-        } catch {
-          // pode retornar vazio em alguns backends
-        }
-
-        dispararToast("Pessoa cadastrada!", `${pessoa.nome} foi salvo no banco de dados.`, "success");
+        dispararToast("Pessoa cadastrada!", `${pessoa.nome} foi salvo com sucesso.`, "success");
         cancelar();
-        obterPessoas();
+        await obterPessoas();
       } else {
-        const txtErro = resposta ? await resposta.text() : "Falha na requisição";
-        throw new Error(txtErro || "Erro ao cadastrar.");
+        const msg = resposta ? await extrairMensagemErro(resposta, "Erro ao cadastrar.") : "Servidor não respondeu.";
+        throw new Error(msg);
       }
     } catch (erro) {
-      dispararToast("Erro no cadastro", erro.message || "Verifique se o backend em localhost:8080 está ativo.", "error");
+      dispararToast(
+        "Erro no cadastro",
+        erro.message || "Verifique se o backend está em execução.",
+        "error"
+      );
     } finally {
       setCarregando(false);
     }
@@ -253,20 +335,23 @@ export default function App() {
 
   // --- 3. SELECIONAR PESSOA NA TABELA ---
   const selecionar = (p) => {
+    const norm = normalizarPessoa(p);
     setPessoa({
-      id: p.id,
-      nome: p.nome || "",
-      cidade: p.cidade || ""
+      id: norm.id,
+      codigo: norm.codigo,
+      nome: norm.nome,
+      cidade: norm.cidade
     });
     setBotao(false); // Ativa botões Alterar, Remover, Cancelar
-    dispararToast("Pessoa selecionada", `Editando: ${p.nome}`, "info");
+    dispararToast("Pessoa selecionada", `Editando: ${norm.nome} (#${norm.id})`, "info");
   };
 
   // --- 4. ALTERAR DADOS (PUT) ---
   const alterar = async (e) => {
     if (e) e.preventDefault();
 
-    if (!pessoa.id) {
+    const idVal = pessoa.codigo !== "" ? pessoa.codigo : pessoa.id;
+    if (idVal === "" || idVal === undefined || idVal === null) {
       dispararToast("Nenhuma pessoa selecionada", "Selecione uma pessoa na tabela para alterar.", "error");
       return;
     }
@@ -278,41 +363,57 @@ export default function App() {
 
     setCarregando(true);
     try {
+      const idNumerico = Number(idVal) || idVal;
+      // Envia TANTO 'codigo' quanto 'id' no payload para compatibilidade universal
       const payload = {
-        id: pessoa.id,
+        codigo: idNumerico,
+        id: idNumerico,
         nome: pessoa.nome.trim(),
         cidade: pessoa.cidade.trim()
       };
 
-      // Tenta PUT em / ou em /alterar ou em /pessoas/{id} ou /pessoas
-      let resposta = await fetchApi("/", {
-        method: "PUT",
-        body: JSON.stringify(payload)
-      }).catch(() => null);
+      // Tenta rotas em ordem comum: /alterar (Spring Boot Ralf Lima), /, /pessoas/{id}, /pessoas
+      const rotasPut = ["/alterar", "/", `/pessoas/${idVal}`, "/pessoas"];
+      let resposta = null;
+      let erroValidacao = null;
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi("/alterar", {
-          method: "PUT",
-          body: JSON.stringify(payload)
-        }).catch(() => null);
+      for (const rota of rotasPut) {
+        try {
+          const r = await fetchApi(rota, {
+            method: "PUT",
+            body: JSON.stringify(payload)
+          });
+
+          if (r && (r.status === 400 || r.status === 422)) {
+            erroValidacao = await extrairMensagemErro(r, "Dados inválidos ao alterar.");
+            resposta = r;
+            break;
+          }
+
+          if (r && (r.ok || r.status === 200)) {
+            resposta = r;
+            break;
+          }
+        } catch {
+          // Continua
+        }
       }
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi(`/pessoas/${pessoa.id}`, {
-          method: "PUT",
-          body: JSON.stringify(payload)
-        }).catch(() => null);
+      if (erroValidacao) {
+        dispararToast("Validação da API", erroValidacao, "error");
+        return;
       }
 
       if (resposta && resposta.ok) {
         dispararToast("Alterado com sucesso!", `Registro de ${pessoa.nome} atualizado.`, "success");
         cancelar();
-        obterPessoas();
+        await obterPessoas();
       } else {
-        throw new Error("Erro ao atualizar registro no backend.");
+        const msg = resposta ? await extrairMensagemErro(resposta, "Erro ao atualizar registro.") : "Falha na conexão.";
+        throw new Error(msg);
       }
     } catch (erro) {
-      dispararToast("Erro na alteração", erro.message || "Falha na conexão com localhost:8080", "error");
+      dispararToast("Erro na alteração", erro.message || "Falha na conexão com a API.", "error");
     } finally {
       setCarregando(false);
     }
@@ -320,34 +421,41 @@ export default function App() {
 
   // --- 5. REMOVER PESSOA (DELETE) ---
   const confirmarRemover = async () => {
-    if (!pessoa.id) return;
+    const idVal = pessoa.codigo !== "" ? pessoa.codigo : pessoa.id;
+    if (idVal === "" || idVal === undefined || idVal === null) return;
 
     setCarregando(true);
     setModalRemover(false);
     try {
-      // Tenta DELETE em /{id} ou em /remover/{id} ou em /pessoas/{id}
-      let resposta = await fetchApi(`/${pessoa.id}`, {
-        method: "DELETE"
-      }).catch(() => null);
+      // Prioridade das rotas DELETE:
+      // 1. /remover/{codigo} (Spring Boot Ralf Lima)
+      // 2. /{codigo}
+      // 3. /pessoas/{id}
+      const rotasDelete = [`/remover/${idVal}`, `/${idVal}`, `/pessoas/${idVal}`];
+      let resposta = null;
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi(`/remover/${pessoa.id}`, {
-          method: "DELETE"
-        }).catch(() => null);
+      for (const rota of rotasDelete) {
+        try {
+          const r = await fetchApi(rota, {
+            method: "DELETE"
+          });
+
+          if (r && (r.ok || r.status === 200 || r.status === 204)) {
+            resposta = r;
+            break;
+          }
+        } catch {
+          // Continua
+        }
       }
 
-      if (!resposta || !resposta.ok) {
-        resposta = await fetchApi(`/pessoas/${pessoa.id}`, {
-          method: "DELETE"
-        }).catch(() => null);
-      }
-
-      if (resposta && (resposta.ok || resposta.status === 204)) {
+      if (resposta && (resposta.ok || resposta.status === 200 || resposta.status === 204)) {
         dispararToast("Pessoa removida!", "O registro foi excluído do banco de dados.", "success");
         cancelar();
-        obterPessoas();
+        await obterPessoas();
       } else {
-        throw new Error("Erro ao excluir registro no backend.");
+        const msg = resposta ? await extrairMensagemErro(resposta, "Erro ao excluir registro.") : "Falha ao conectar com o banco.";
+        throw new Error(msg);
       }
     } catch (erro) {
       dispararToast("Erro ao remover", erro.message || "Falha ao conectar com o banco de dados.", "error");
@@ -362,13 +470,83 @@ export default function App() {
     setBotao(true); // Volta para botão Cadastrar
   };
 
+  // --- 7. FERRAMENTA DE DIAGNÓSTICO DE ENDPOINTS ---
+  const executarDiagnostico = async () => {
+    setTestandoDiagnostico(true);
+    setDiagnosticoApi(null);
+    const resultados = [];
+    const rotasParaTestar = [
+      { rota: "/listar", metodo: "GET" },
+      { rota: "/", metodo: "GET" },
+      { rota: "/pessoas", metodo: "GET" }
+    ];
+
+    let online = false;
+    let usaCodigo = false;
+    let usaId = false;
+
+    for (const item of rotasParaTestar) {
+      try {
+        const inicio = performance.now();
+        const res = await fetchApi(item.rota, { method: item.metodo });
+        const tempoMs = Math.round(performance.now() - inicio);
+
+        if (res.ok) {
+          online = true;
+          let itens = 0;
+          try {
+            const json = await res.json();
+            const arr = Array.isArray(json) ? json : (json.content || json.data || []);
+            itens = arr.length;
+            if (arr.length > 0) {
+              if (arr[0].codigo !== undefined) usaCodigo = true;
+              if (arr[0].id !== undefined) usaId = true;
+            }
+          } catch {}
+
+          resultados.push({
+            rota: item.rota,
+            status: `${res.status} OK`,
+            tempo: `${tempoMs}ms`,
+            sucesso: true,
+            detalhe: `${itens} registro(s) retornado(s)`
+          });
+        } else {
+          resultados.push({
+            rota: item.rota,
+            status: `${res.status} ${res.statusText || ""}`,
+            tempo: `${tempoMs}ms`,
+            sucesso: false,
+            detalhe: "Rota respondeu com status diferente de 200"
+          });
+        }
+      } catch (err) {
+        resultados.push({
+          rota: item.rota,
+          status: "Falha de Rede / CORS",
+          tempo: "-",
+          sucesso: false,
+          detalhe: err.message || "Sem resposta do servidor"
+        });
+      }
+    }
+
+    setDiagnosticoApi({
+      online,
+      usaCodigo,
+      usaId,
+      resultados
+    });
+    setTestandoDiagnostico(false);
+  };
+
   // Filtragem em tempo real na tabela
   const pessoasFiltradas = useMemo(() => {
     if (!termoBusca.trim()) return pessoas;
     const busca = termoBusca.toLowerCase();
     return pessoas.filter(
       (p) =>
-        String(p.id).includes(busca) ||
+        String(p.codigo || p.id || "").includes(busca) ||
         (p.nome && p.nome.toLowerCase().includes(busca)) ||
         (p.cidade && p.cidade.toLowerCase().includes(busca))
     );
@@ -377,10 +555,10 @@ export default function App() {
   // Carregar dados de teste caso o backend ainda esteja offline
   const carregarMockParaTeste = () => {
     setPessoas([
-      { id: 1, nome: "Lucas Mendes", cidade: "São Paulo" },
-      { id: 2, nome: "Beatriz Santos", cidade: "Rio de Janeiro" },
-      { id: 3, nome: "Carlos Eduardo", cidade: "Belo Horizonte" },
-      { id: 4, nome: "Mariana Costa", cidade: "Curitiba" }
+      { id: 1, codigo: 1, nome: "Lucas Mendes", cidade: "São Paulo" },
+      { id: 2, codigo: 2, nome: "Beatriz Santos", cidade: "Rio de Janeiro" },
+      { id: 3, codigo: 3, nome: "Carlos Eduardo", cidade: "Belo Horizonte" },
+      { id: 4, codigo: 4, nome: "Mariana Costa", cidade: "Curitiba" }
     ]);
     dispararToast("Dados de demonstração carregados", "Exibindo pessoas para testes de interface.", "info");
   };
@@ -471,7 +649,7 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <Icons.Edit size={18} /> Editar Pessoa #{pessoa.id}
+                      <Icons.Edit size={18} /> Editar Pessoa #{pessoa.codigo || pessoa.id}
                     </>
                   )}
                 </h2>
@@ -502,9 +680,9 @@ export default function App() {
                     <input
                       type="text"
                       name="id"
-                      value={pessoa.id}
+                      value={pessoa.codigo || pessoa.id || ""}
                       onChange={atualizarPessoa}
-                      placeholder={botao ? "Automático (Auto-Increment)" : "ID da Pessoa"}
+                      placeholder={botao ? "Automático (Auto-Increment)" : "Código / ID da Pessoa"}
                       className="shadcn-input with-icon"
                       readOnly
                     />
@@ -618,24 +796,39 @@ export default function App() {
                     <Icons.Alert size={16} style={{ marginTop: "2px", flexShrink: 0 }} />
                     <div>
                       <strong>Atenção:</strong> O backend em <code>{apiUrl}</code> não respondeu.
-                      <br />
-                      Deseja{" "}
-                      <button
-                        type="button"
-                        onClick={carregarMockParaTeste}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          color: "inherit",
-                          textDecoration: "underline",
-                          cursor: "pointer",
-                          fontWeight: 700,
-                          padding: 0
-                        }}
-                      >
-                        carregar dados fictícios para testar a tela
-                      </button>
-                      ?
+                      <div style={{ marginTop: "0.35rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => setMostrarConfigApi(true)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "inherit",
+                            textDecoration: "underline",
+                            cursor: "pointer",
+                            fontWeight: 700,
+                            padding: 0
+                          }}
+                        >
+                          Configurar Conexão / Testar
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={carregarMockParaTeste}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "inherit",
+                            textDecoration: "underline",
+                            cursor: "pointer",
+                            fontWeight: 700,
+                            padding: 0
+                          }}
+                        >
+                          Carregar dados fictícios
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -699,14 +892,22 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pessoasFiltradas.map((item) => {
-                      const estaSelecionado = !botao && String(pessoa.id) === String(item.id);
+                    {pessoasFiltradas.map((item, index) => {
+                      const identificador = item.codigo !== undefined && item.codigo !== null && item.codigo !== "" 
+                        ? item.codigo 
+                        : item.id !== undefined && item.id !== null && item.id !== ""
+                        ? item.id
+                        : index + 1;
+                      const estaSelecionado =
+                        !botao &&
+                        String(pessoa.codigo || pessoa.id) === String(identificador);
+
                       return (
                         <tr
-                          key={item.id || Math.random()}
+                          key={item.codigo ?? item.id ?? index}
                           className={estaSelecionado ? "row-selected" : ""}
                         >
-                          <td className="id-cell">#{item.id}</td>
+                          <td className="id-cell">#{identificador}</td>
                           <td>
                             <div className="user-name-cell">
                               <div className="user-avatar-placeholder">
@@ -786,7 +987,7 @@ export default function App() {
             </div>
             <div className="card-content">
               <p style={{ fontSize: "0.9375rem", marginBottom: "1rem" }}>
-                Tem certeza que deseja remover o cadastro de <strong>{pessoa.nome}</strong> (ID #{pessoa.id}) de <strong>{pessoa.cidade}</strong>?
+                Tem certeza que deseja remover o cadastro de <strong>{pessoa.nome}</strong> (#{pessoa.codigo || pessoa.id}) de <strong>{pessoa.cidade}</strong>?
               </p>
               <p style={{ fontSize: "0.8125rem", color: "hsl(var(--muted-foreground))", marginBottom: "1.5rem" }}>
                 Essa ação enviará uma requisição <code>DELETE</code> ao endpoint do backend e não poderá ser desfeita.
@@ -815,13 +1016,13 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFIGURAÇÃO DA API (SHADCN DIALOG) */}
+      {/* MODAL DE CONFIGURAÇÃO DA API (SHADCN DIALOG COM DIAGNÓSTICO) */}
       {mostrarConfigApi && (
         <div className="modal-overlay" onClick={() => setMostrarConfigApi(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
             <div className="card-header">
               <h3 className="card-title">
-                <Icons.Database size={18} /> Conexão com o Backend
+                <Icons.Database size={18} /> Conexão & Diagnóstico da API
               </h3>
               <button
                 onClick={() => setMostrarConfigApi(false)}
@@ -831,39 +1032,129 @@ export default function App() {
               </button>
             </div>
             <div className="card-content">
-              <p style={{ fontSize: "0.8125rem", color: "hsl(var(--muted-foreground))", marginBottom: "1.25rem" }}>
-                Configure o endereço base da sua API REST para conexão com o banco de dados.
+              <p style={{ fontSize: "0.8125rem", color: "hsl(var(--muted-foreground))", marginBottom: "1rem" }}>
+                Configure o endereço base da sua API REST e teste a comunicação direta com os endpoints.
               </p>
 
-              <div className="form-group">
+              <div className="form-group" style={{ marginBottom: "0.75rem" }}>
                 <label className="form-label">URL Base do Servidor</label>
                 <input
                   type="text"
                   value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
+                  onChange={(e) => salvarApiUrl(e.target.value)}
                   placeholder="http://localhost:8080"
                   className="shadcn-input"
                 />
               </div>
 
+              {/* Botões de preenchimento rápido */}
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.25rem" }}>
+                <button
+                  type="button"
+                  onClick={() => salvarApiUrl("http://localhost:8080")}
+                  className={`btn btn-sm ${apiUrl === "http://localhost:8080" ? "btn-default" : "btn-secondary"}`}
+                >
+                  localhost:8080 (Padrão Spring)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => salvarApiUrl("/api")}
+                  className={`btn btn-sm ${apiUrl === "/api" ? "btn-default" : "btn-secondary"}`}
+                  title="Usa o proxy do Vite para ignorar bloqueios de CORS"
+                >
+                  /api (Proxy Vite anti-CORS)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => salvarApiUrl("http://localhost:3000")}
+                  className={`btn btn-sm ${apiUrl === "http://localhost:3000" ? "btn-default" : "btn-secondary"}`}
+                >
+                  localhost:3000 (Node)
+                </button>
+              </div>
+
+              {/* Painel de Diagnóstico */}
               <div
                 style={{
                   backgroundColor: "var(--surface-subtle)",
-                  padding: "0.75rem 1rem",
+                  padding: "0.875rem 1rem",
                   borderRadius: "calc(var(--radius) - 0.25rem)",
                   border: "1px solid hsl(var(--border))",
                   fontSize: "0.8125rem",
-                  marginBottom: "1.25rem",
-                  color: "hsl(var(--muted-foreground))"
+                  marginBottom: "1.25rem"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                  <span style={{ fontWeight: 600 }}>Testador de Endpoints:</span>
+                  <button
+                    type="button"
+                    onClick={executarDiagnostico}
+                    className="btn btn-outline btn-sm"
+                    disabled={testandoDiagnostico}
+                  >
+                    <Icons.Refresh size={13} className={testandoDiagnostico ? "animate-spin" : ""} />
+                    {testandoDiagnostico ? "Testando..." : "Executar Diagnóstico"}
+                  </button>
+                </div>
+
+                {diagnosticoApi && (
+                  <div style={{ marginTop: "0.75rem", borderTop: "1px solid hsl(var(--border))", paddingTop: "0.75rem" }}>
+                    <div style={{ marginBottom: "0.5rem" }}>
+                      <strong>Status Geral:</strong>{" "}
+                      <span style={{ color: diagnosticoApi.online ? "#10b981" : "hsl(var(--destructive))", fontWeight: 600 }}>
+                        {diagnosticoApi.online ? "● API Respondendo" : "● Não Conectado"}
+                      </span>
+                      {diagnosticoApi.online && (
+                        <span style={{ marginLeft: "0.5rem", fontSize: "0.75rem", color: "hsl(var(--muted-foreground))" }}>
+                          (Detectado: {diagnosticoApi.usaCodigo ? "campo 'codigo' (Spring Boot)" : ""} {diagnosticoApi.usaId ? "campo 'id'" : ""})
+                        </span>
+                      )}
+                    </div>
+                    {diagnosticoApi.resultados.map((res, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          padding: "0.25rem 0",
+                          fontSize: "0.75rem",
+                          color: res.sucesso ? "#10b981" : "hsl(var(--muted-foreground))"
+                        }}
+                      >
+                        <code>{res.rota}</code>
+                        <span>{res.status} ({res.detalhe})</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!diagnosticoApi && (
+                  <p style={{ margin: 0, fontSize: "0.75rem", color: "hsl(var(--muted-foreground))" }}>
+                    Clique em "Executar Diagnóstico" para testar <code>/listar</code>, <code>/</code> e <code>/pessoas</code> na URL configurada.
+                  </p>
+                )}
+              </div>
+
+              {/* Dica de CORS para Spring Boot */}
+              <div
+                style={{
+                  backgroundColor: "hsla(var(--primary), 0.03)",
+                  padding: "0.75rem 1rem",
+                  borderRadius: "calc(var(--radius) - 0.25rem)",
+                  border: "1px dashed hsl(var(--border))",
+                  fontSize: "0.75rem",
+                  color: "hsl(var(--muted-foreground))",
+                  marginBottom: "1.25rem"
                 }}
               >
                 <div style={{ fontWeight: 600, color: "hsl(var(--foreground))", marginBottom: "0.25rem" }}>
-                  Endpoints suportados automaticamente:
+                  💡 Dica para Spring Boot:
                 </div>
-                <div>• Listar: <code>GET {apiUrl}/</code> ou <code>/pessoas</code></div>
-                <div>• Cadastrar: <code>POST {apiUrl}/</code> ou <code>/cadastrar</code></div>
-                <div>• Alterar: <code>PUT {apiUrl}/</code> ou <code>/alterar</code></div>
-                <div>• Remover: <code>DELETE {apiUrl}/{"{id}"}</code> ou <code>/remover/{"{id}"}</code></div>
+                <div>1. No seu <code>@RestController</code>, adicione a anotação:</div>
+                <code style={{ display: "block", margin: "0.25rem 0", color: "hsl(var(--primary))" }}>
+                  @CrossOrigin(origins = "*")
+                </code>
+                <div>2. Ou mude a URL da API acima para <code>/api</code> (o Vite encaminha sem erro de CORS).</div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
@@ -875,7 +1166,7 @@ export default function App() {
                   }}
                   className="btn btn-default"
                 >
-                  Salvar e Testar
+                  Salvar e Reconectar
                 </button>
               </div>
             </div>

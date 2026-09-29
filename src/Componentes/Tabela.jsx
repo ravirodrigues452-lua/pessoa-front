@@ -14,11 +14,15 @@ function Tabela({ pessoas = [], selecionar, pessoaSelecionada }) {
             </tr>
           </thead>
           <tbody>
-            {pessoas.map((item) => {
-              const estaSelecionado = pessoaSelecionada && String(pessoaSelecionada.id) === String(item.id);
+            {pessoas.map((item, index) => {
+              const itemId = item.codigo ?? item.id ?? (index + 1);
+              const estaSelecionado =
+                pessoaSelecionada &&
+                String(pessoaSelecionada.codigo ?? pessoaSelecionada.id) === String(itemId);
+
               return (
-                <tr key={item.id} className={estaSelecionado ? "row-selected" : ""}>
-                  <td className="id-cell">#{item.id}</td>
+                <tr key={item.id ?? item.codigo ?? index} className={estaSelecionado ? "row-selected" : ""}>
+                  <td className="id-cell">#{itemId}</td>
                   <td>
                     <div className="user-name-cell">
                       <div className="user-avatar-placeholder">
