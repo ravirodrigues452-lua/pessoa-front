@@ -28,6 +28,8 @@ function Tabela({
               <th>Categoria</th>
               <th style={{ textAlign: "center", width: "120px" }}>Estoque</th>
               <th style={{ textAlign: "right", width: "120px" }}>Preço</th>
+              <th style={{ textAlign: "center", width: "100px" }}>Entrada</th>
+              <th style={{ textAlign: "center", width: "100px" }}>Saída</th>
               <th style={{ width: "130px", textAlign: "right" }}>Ações</th>
             </tr>
           </thead>
@@ -95,6 +97,16 @@ function Tabela({
                   </td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
                     {formatarMoeda(preco)}
+                  </td>
+                  <td style={{ textAlign: "center", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                    <span className="badge badge-success" style={{ minWidth: "48px" }}>
+                      {item.entrada ?? 0}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: "center", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                    <span className="badge badge-danger" style={{ minWidth: "48px" }}>
+                      {item.saida ?? 0}
+                    </span>
                   </td>
                   <td>
                     <div className="table-actions">

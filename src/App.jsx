@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import MovimentacaoEstoque from "./Componentes/MovimentacaoEstoque";
 
 // --- ÍCONES SVG ESTILO LUCIDE / SHADCN (100% nativos sem dependências externas) ---
 const Icons = {
@@ -138,6 +139,88 @@ const produtoVazio = {
   preco: ""
 };
 
+// ─── GERENCIAMENTO E CÁLCULO DE MOVIMENTAÇÕES DE ESTOQUE ──────────
+const CHAVE_MOVIMENTACOES = "estoque_movimentacoes_log_v2";
+
+const obterMovimentacoesStorage = () => {
+  try {
+    const salvo = localStorage.getItem(CHAVE_MOVIMENTACOES);
+    return salvo ? JSON.parse(salvo) : [];
+  } catch {
+    return [];
+  }
+};
+
+const salvarMovimentacaoStorage = (novoMov) => {
+  try {
+    const lista = obterMovimentacoesStorage();
+    lista.unshift(novoMov);
+    localStorage.setItem(CHAVE_MOVIMENTACOES, JSON.stringify(lista.slice(0, 500)));
+    return lista;
+  } catch {
+    return [];
+  }
+};
+
+const mesclarMovimentacoes = (movsApi = [], movsLocais = []) => {
+  const mapa = new Map();
+  // Primeiro adiciona os locais
+  movsLocais.forEach((m) => {
+    const chave = m.id ? String(m.id) : `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+    mapa.set(chave, m);
+  });
+  // Depois adiciona os vindos da API do backend
+  movsApi.forEach((m) => {
+    const chave = m.id ? String(m.id) : `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+    mapa.set(chave, {
+      ...m,
+      produtoNome: m.produtoNome || m.nome || m.descricao
+    });
+  });
+  return Array.from(mapa.values()).sort((a, b) => {
+    return new Date(b.dataMovimentacao || 0) - new Date(a.dataMovimentacao || 0);
+  });
+};
+
+const aplicarMovimentacoesAosProdutos = (listaProdutos, listaMovimentacoes = []) => {
+  if (!Array.isArray(listaProdutos)) return [];
+
+  return listaProdutos.map((p) => {
+    const codModelo = String(p.codigoModelo || "").trim().toLowerCase();
+    const idProd = String(p.id ?? p.codigo ?? "");
+
+    // Filtrar movimentações deste produto específico
+    const movsDoProduto = listaMovimentacoes.filter((m) => {
+      const mMovModelo = String(m.codigoModelo || m.codigo_modelo || "").trim().toLowerCase();
+      const mMovId = String(m.produtoId || m.produto_id || m.idProduto || "");
+      return (codModelo && mMovModelo && codModelo === mMovModelo) || (idProd && mMovId && idProd === mMovId);
+    });
+
+    let somaEntradas = 0;
+    let somaSaidas = 0;
+
+    movsDoProduto.forEach((m) => {
+      const tipo = String(m.tipo || "").toUpperCase();
+      const qtd = Number(m.quantidade || 0);
+      if (tipo === "ENTRADA") somaEntradas += qtd;
+      else if (tipo === "SAIDA") somaSaidas += qtd;
+    });
+
+    const qtdAtual = Number(p.quantidade || 0);
+    // Todo estoque atual deriva de entradas: entradas = saldo + saidas
+    const entradaCalculada = Math.max(somaEntradas, Math.max(0, qtdAtual) + somaSaidas);
+    const saidaCalculada = somaSaidas;
+
+    return {
+      ...p,
+      quantidade: qtdAtual,
+      entrada: entradaCalculada,
+      saida: saidaCalculada,
+      fluxoLiquido: entradaCalculada - saidaCalculada
+    };
+  });
+};
+
 // Utilitário para normalizar qualquer objeto vindo da API de estoque
 const normalizarProduto = (item) => {
   if (!item || typeof item !== "object") return null;
@@ -154,6 +237,8 @@ const normalizarProduto = (item) => {
   const categoria = item.categoria ?? "Geral";
   const quantidade = Number(item.quantidade ?? item.qtd ?? item.estoque ?? 0);
   const preco = Number(item.preco ?? item.valor ?? 0);
+  const entrada = Number(item.entrada ?? 0);
+  const saida = Number(item.saida ?? 0);
 
   return {
     ...item,
@@ -165,7 +250,9 @@ const normalizarProduto = (item) => {
     categoria: categoria,
     quantidade: isNaN(quantidade) ? 0 : quantidade,
     preco: isNaN(preco) ? 0 : preco,
-    valor: isNaN(preco) ? 0 : preco
+    valor: isNaN(preco) ? 0 : preco,
+    entrada: isNaN(entrada) ? 0 : entrada,
+    saida: isNaN(saida) ? 0 : saida
   };
 };
 
@@ -173,6 +260,7 @@ export default function App() {
   // --- ESTADOS PRINCIPAIS ---
   const [produto, setProduto] = useState(produtoVazio);
   const [produtos, setProdutos] = useState([]);
+  const [historicoMovimentacoes, setHistoricoMovimentacoes] = useState(obterMovimentacoesStorage);
   const [botao, setBotao] = useState(true); // true = cadastrar, false = alterar/remover/cancelar
   const [termoBusca, setTermoBusca] = useState("");
   const [categoriaFiltro, setCategoriaFiltro] = useState("TODAS");
@@ -255,17 +343,67 @@ export default function App() {
     });
   };
 
-  // --- 1. LISTAR / OBTER PRODUTOS DO ESTOQUE (GET) ---
+  // --- REGISTRAR MOVIMENTAÇÃO INTERNA / API ---
+  const registrarMovimentacaoInterna = async ({
+    tipo,
+    quantidade,
+    codigoModelo,
+    produtoId = null,
+    produtoNome = "",
+    marca = "Geral",
+    codigoLote = "PADRAO",
+    observacao = "",
+    saldoApos = null,
+    pularRecargaProdutos = false
+  }) => {
+    const qtdNum = Number(quantidade || 0);
+    if (qtdNum <= 0) return;
+    const tipoNorm = String(tipo).toLowerCase();
+
+    // 1. Tentar registrar no backend na rota dedicada do MovimentacaoControle
+    try {
+      await fetchApi(`/movimentacao/${tipoNorm}`, {
+        method: "POST",
+        body: JSON.stringify({
+          codigoModelo,
+          quantidade: qtdNum,
+          codigoLote: codigoLote || "PADRAO",
+          marca: marca || "Geral",
+          observacao: observacao || `Registro de ${tipoNorm}`
+        })
+      });
+    } catch {
+      // Continua com persistência local
+    }
+
+    // 2. Persistir localmente no histórico
+    const novoMov = {
+      id: Date.now() + Math.random(),
+      tipo: tipoNorm.toUpperCase(),
+      quantidade: qtdNum,
+      codigoModelo: codigoModelo || "",
+      produtoId: produtoId || "",
+      produtoNome: produtoNome || codigoModelo || "Produto",
+      codigoLote: codigoLote || "PADRAO",
+      marca: marca || "Geral",
+      observacao: observacao || `Registro de ${tipoNorm}`,
+      dataMovimentacao: new Date().toISOString().replace("T", " ").substring(0, 19),
+      saldoApos: saldoApos
+    };
+
+    const listaAtualizada = salvarMovimentacaoStorage(novoMov);
+    setHistoricoMovimentacoes(listaAtualizada);
+
+    if (!pularRecargaProdutos) {
+      setProdutos((prev) => aplicarMovimentacoesAosProdutos(prev, listaAtualizada));
+    }
+  };
+
+  // --- 1. LISTAR / OBTER PRODUTOS DO ESTOQUE (GET) COM MOVIMENTAÇÕES ---
   const obterProdutos = async (mostrarToastSucesso = false) => {
     setCarregando(true);
     setStatusConexao("verificando");
     try {
-      // Prioridade das rotas do backend ProdutoControle:
-      // 1. / (raiz padrão configurada no ProdutoControle)
-      // 2. /produtos
-      // 3. /selecionar
-      // 4. /estoque
-      // 5. /listar
       let resposta = null;
       const rotasGet = ["/", "/produtos", "/selecionar", "/estoque", "/listar"];
 
@@ -281,6 +419,23 @@ export default function App() {
         }
       }
 
+      // Tentar obter histórico de movimentações da API Spring Boot em paralelo
+      let movsApi = [];
+      try {
+        const resMov = await fetchApi("/movimentacao/historico");
+        if (resMov && resMov.ok) {
+          const dadosMov = await resMov.json();
+          if (Array.isArray(dadosMov)) movsApi = dadosMov;
+        }
+      } catch {
+        // Ignora se rota ainda não estiver ativa no backend
+      }
+
+      // Mesclar movimentações da API com o armazenamento local
+      const movsLocais = obterMovimentacoesStorage();
+      const todosMovs = mesclarMovimentacoes(movsApi, movsLocais);
+      setHistoricoMovimentacoes(todosMovs);
+
       if (resposta && resposta.ok) {
         const dados = await resposta.json();
         const listaBruta = Array.isArray(dados)
@@ -288,12 +443,14 @@ export default function App() {
           : (dados.content || dados.data || dados.produtos || []);
 
         const listaNormalizada = listaBruta.map(normalizarProduto).filter(Boolean);
-        setProdutos(listaNormalizada);
+        // Aplica o cálculo real de entradas e saídas aos produtos
+        const listaComMovimentacoes = aplicarMovimentacoesAosProdutos(listaNormalizada, todosMovs);
+        setProdutos(listaComMovimentacoes);
         setStatusConexao("online");
         if (mostrarToastSucesso) {
           dispararToast(
             "Estoque Atualizado!",
-            `${listaNormalizada.length} produto(s) sincronizados com o banco de dados.`,
+            `${listaComMovimentacoes.length} produto(s) sincronizados com o banco de dados.`,
             "success"
           );
         }
@@ -302,6 +459,8 @@ export default function App() {
       }
     } catch (erro) {
       setStatusConexao("offline");
+      // Se offline, recalcular sobre produtos locais atuais se houver
+      setProdutos((prev) => aplicarMovimentacoesAosProdutos(prev, obterMovimentacoesStorage()));
       dispararToast(
         "Aguardando conexão com " + apiUrl,
         "Certifique-se de que a API Spring Boot está ativa na porta 8080.",
@@ -399,6 +558,22 @@ export default function App() {
           `"${produto.nome}" (Modelo: ${produto.codigoModelo.trim()}) foi registrado com sucesso no estoque.`,
           "success"
         );
+
+        // Se cadastrou com quantidade > 0, registra a entrada inicial no histórico de movimentações
+        if (qtdNum > 0) {
+          await registrarMovimentacaoInterna({
+            tipo: "ENTRADA",
+            quantidade: qtdNum,
+            codigoModelo: produto.codigoModelo.trim(),
+            produtoNome: produto.nome.trim(),
+            marca: produto.categoria.trim() || "Geral",
+            codigoLote: "LOTE-CADASTRO",
+            observacao: `Entrada inicial no cadastro de "${produto.nome.trim()}"`,
+            saldoApos: qtdNum,
+            pularRecargaProdutos: true
+          });
+        }
+
         cancelar();
         await obterProdutos();
       } else {
@@ -454,6 +629,11 @@ export default function App() {
       const qtdNum = produto.quantidade !== "" ? parseInt(produto.quantidade, 10) : 0;
       const precoNum = produto.preco !== "" ? parseFloat(String(produto.preco).replace(",", ".")) : 0.0;
 
+      // Descobrir a quantidade anterior para registrar entrada ou saída caso tenha havido alteração
+      const produtoAntigo = produtos.find((p) => String(p.id) === String(idVal) || String(p.codigo) === String(idVal));
+      const qtdAnterior = produtoAntigo ? Number(produtoAntigo.quantidade || 0) : qtdNum;
+      const deltaQtd = qtdNum - qtdAnterior;
+
       const payload = {
         id: idNumerico,
         codigo: idNumerico,
@@ -503,6 +683,36 @@ export default function App() {
           `O produto #${idVal} (${produto.nome}) foi atualizado no estoque.`,
           "success"
         );
+
+        // Se o saldo mudou, registra a entrada ou saída correspondente no log
+        if (deltaQtd > 0) {
+          await registrarMovimentacaoInterna({
+            tipo: "ENTRADA",
+            quantidade: deltaQtd,
+            codigoModelo: produto.codigoModelo.trim(),
+            produtoId: idVal,
+            produtoNome: produto.nome.trim(),
+            marca: produto.categoria.trim() || "Geral",
+            codigoLote: "LOTE-AJUSTE",
+            observacao: `Ajuste manual de estoque (+${deltaQtd} un)`,
+            saldoApos: qtdNum,
+            pularRecargaProdutos: true
+          });
+        } else if (deltaQtd < 0) {
+          await registrarMovimentacaoInterna({
+            tipo: "SAIDA",
+            quantidade: Math.abs(deltaQtd),
+            codigoModelo: produto.codigoModelo.trim(),
+            produtoId: idVal,
+            produtoNome: produto.nome.trim(),
+            marca: produto.categoria.trim() || "Geral",
+            codigoLote: "LOTE-AJUSTE",
+            observacao: `Ajuste manual de estoque (-${Math.abs(deltaQtd)} un)`,
+            saldoApos: qtdNum,
+            pularRecargaProdutos: true
+          });
+        }
+
         cancelar();
         await obterProdutos();
       } else {
@@ -517,53 +727,200 @@ export default function App() {
   };
 
   // --- 5. MOVIMENTAÇÃO RÁPIDA DE ESTOQUE (+1 / -1) ---
-  const movimentarEstoque = async (tipoOperacao, quantidadeDelta = 1) => {
-    const idVal = produto.codigo !== "" ? produto.codigo : produto.id;
-    if (!idVal) return;
+  const movimentarEstoque = async (tipoOperacao, quantidadeDelta = 1, produtoAlvo = null) => {
+    const alvo = produtoAlvo || produto;
+    const idVal = alvo.codigo !== "" && alvo.codigo !== undefined ? alvo.codigo : alvo.id;
+    if (!idVal && !alvo.codigoModelo) return;
 
-    const qtdAtual = parseInt(produto.quantidade || 0, 10);
-    if (tipoOperacao === "saida" && qtdAtual < quantidadeDelta) {
-      dispararToast("Estoque insuficiente", `Saldo atual é de ${qtdAtual} un. Não é possível retirar ${quantidadeDelta}.`, "error");
+    const qtdAtual = parseInt(alvo.quantidade || 0, 10);
+    const tipoNormalizado = tipoOperacao.toLowerCase(); // "entrada" ou "saida"
+
+    if (tipoNormalizado === "saida" && qtdAtual < quantidadeDelta) {
+      dispararToast(
+        "Estoque insuficiente",
+        `Saldo atual de "${alvo.nome || alvo.codigoModelo}" é de ${qtdAtual} un. Não é possível retirar ${quantidadeDelta}.`,
+        "error"
+      );
       return;
     }
 
     setCarregando(true);
     try {
-      // Tenta rota especializada do ProdutoControle: /produtos/{id}/entrada ou /produtos/{id}/saida
-      const rotaEspecializada = `/produtos/${idVal}/${tipoOperacao}?quantidade=${quantidadeDelta}`;
-      let sucesso = false;
+      const codModelo = alvo.codigoModelo || "";
+      const novaQtd = tipoNormalizado === "entrada" ? qtdAtual + quantidadeDelta : Math.max(0, qtdAtual - quantidadeDelta);
 
+      // 1. Tentar rota especializada do MovimentacaoControle: POST /movimentacao/entrada ou /movimentacao/saida
+      let salvoNoBackend = false;
       try {
-        const res = await fetchApi(rotaEspecializada, { method: "POST" });
-        if (res && res.ok) {
-          sucesso = true;
+        const payloadMov = {
+          codigoModelo: codModelo,
+          quantidade: quantidadeDelta,
+          codigoLote: "LOTE-RAPIDO",
+          marca: alvo.categoria || "Geral",
+          observacao: `Movimentação rápida (${tipoNormalizado === "entrada" ? "Entrada" : "Saída"} de ${quantidadeDelta} un)`
+        };
+        const resMov = await fetchApi(`/movimentacao/${tipoNormalizado}`, {
+          method: "POST",
+          body: JSON.stringify(payloadMov)
+        });
+        if (resMov && (resMov.ok || resMov.status === 200 || resMov.status === 201)) {
+          salvoNoBackend = true;
         }
       } catch {}
 
-      // Fallback: se a rota especializada não responder, altera o produto atualizando a quantidade
-      if (!sucesso) {
-        const novaQtd = tipoOperacao === "entrada" ? qtdAtual + quantidadeDelta : Math.max(0, qtdAtual - quantidadeDelta);
-        const payload = {
-          ...produto,
-          id: Number(idVal) || idVal,
-          codigo: Number(idVal) || idVal,
-          quantidade: novaQtd
-        };
-        await fetchApi("/alterar", { method: "PUT", body: JSON.stringify(payload) });
+      // 2. Fallback: rota /produtos/{id}/entrada ou /saida
+      if (!salvoNoBackend && idVal) {
+        try {
+          const resEsp = await fetchApi(`/produtos/${idVal}/${tipoNormalizado}?quantidade=${quantidadeDelta}`, {
+            method: "POST"
+          });
+          if (resEsp && resEsp.ok) {
+            salvoNoBackend = true;
+          }
+        } catch {}
       }
 
+      // 3. Fallback: alterar produto atualizando a quantidade
+      if (!salvoNoBackend && idVal) {
+        try {
+          const payload = {
+            ...alvo,
+            id: Number(idVal) || idVal,
+            codigo: Number(idVal) || idVal,
+            quantidade: novaQtd
+          };
+          await fetchApi("/alterar", { method: "PUT", body: JSON.stringify(payload) });
+        } catch {}
+      }
+
+      // 4. Registrar no log de movimentações
+      const novoMov = {
+        id: Date.now() + Math.random(),
+        tipo: tipoNormalizado.toUpperCase(),
+        quantidade: quantidadeDelta,
+        codigoModelo: codModelo,
+        produtoId: idVal,
+        produtoNome: alvo.nome || alvo.descricao || codModelo,
+        codigoLote: "LOTE-RAPIDO",
+        marca: alvo.categoria || "Geral",
+        observacao: `Movimentação rápida no estoque`,
+        dataMovimentacao: new Date().toISOString().replace("T", " ").substring(0, 19),
+        saldoApos: novaQtd
+      };
+      const listaAtualizada = salvarMovimentacaoStorage(novoMov);
+      setHistoricoMovimentacoes(listaAtualizada);
+
       dispararToast(
-        tipoOperacao === "entrada" ? "Entrada registrada!" : "Saída registrada!",
-        `${quantidadeDelta} un ${tipoOperacao === "entrada" ? "adicionada(s)" : "baixada(s)"} no estoque.`,
+        tipoNormalizado === "entrada" ? "Entrada registrada!" : "Saída registrada!",
+        `${quantidadeDelta} un ${tipoNormalizado === "entrada" ? "adicionada(s)" : "baixada(s)"} em "${alvo.nome || codModelo}". Novo saldo: ${novaQtd} un.`,
         "success"
       );
 
-      // Atualiza estado local e recarrega
-      const novaQtdLocal = tipoOperacao === "entrada" ? qtdAtual + quantidadeDelta : Math.max(0, qtdAtual - quantidadeDelta);
-      setProduto((prev) => ({ ...prev, quantidade: novaQtdLocal }));
+      // Atualiza formulário se for o item em edição
+      if (String(produto.id) === String(idVal) || String(produto.codigo) === String(idVal)) {
+        setProduto((prev) => ({ ...prev, quantidade: novaQtd }));
+      }
+
       await obterProdutos();
     } catch (err) {
       dispararToast("Erro na movimentação", err.message || "Não foi possível movimentar o estoque.", "error");
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  // --- REGISTRO AVANÇADO DE MOVIMENTAÇÃO (LOTE, MARCA, MODELO, OBSERVAÇÃO) ---
+  const registrarMovimentacaoAvancada = async ({
+    tipo,
+    codigoModelo,
+    quantidade,
+    codigoLote = "PADRAO",
+    marca = "Geral",
+    observacao = ""
+  }) => {
+    const qtdNum = parseInt(quantidade, 10);
+    if (!qtdNum || qtdNum <= 0) {
+      dispararToast("Quantidade inválida", "Informe uma quantidade maior que zero.", "error");
+      return;
+    }
+
+    const prodAlvo = produtos.find(
+      (p) => String(p.codigoModelo || "").toLowerCase() === String(codigoModelo || "").toLowerCase()
+    );
+
+    if (!prodAlvo && !codigoModelo) {
+      dispararToast("Produto não selecionado", "Selecione o produto para a movimentação.", "error");
+      return;
+    }
+
+    const tipoNorm = tipo.toLowerCase();
+    if (tipoNorm === "saida" && prodAlvo && Number(prodAlvo.quantidade || 0) < qtdNum) {
+      dispararToast(
+        "Estoque insuficiente",
+        `Saldo atual é de ${prodAlvo.quantidade} un. Não é possível retirar ${qtdNum} un.`,
+        "error"
+      );
+      return;
+    }
+
+    setCarregando(true);
+    try {
+      let salvoApi = false;
+      try {
+        const payload = {
+          codigoModelo,
+          quantidade: qtdNum,
+          codigoLote: codigoLote.trim() || "PADRAO",
+          marca: marca.trim() || "Geral",
+          observacao: observacao.trim()
+        };
+        const res = await fetchApi(`/movimentacao/${tipoNorm}`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        if (res && (res.ok || res.status === 200 || res.status === 201)) {
+          salvoApi = true;
+        }
+      } catch {}
+
+      const idVal = prodAlvo ? (prodAlvo.codigo || prodAlvo.id) : null;
+      const saldoAtual = prodAlvo ? Number(prodAlvo.quantidade || 0) : 0;
+      const novoSaldo = tipoNorm === "entrada" ? saldoAtual + qtdNum : Math.max(0, saldoAtual - qtdNum);
+
+      if (!salvoApi && idVal) {
+        try {
+          await fetchApi("/alterar", {
+            method: "PUT",
+            body: JSON.stringify({ ...prodAlvo, quantidade: novoSaldo })
+          });
+        } catch {}
+      }
+
+      const novoMov = {
+        id: Date.now() + Math.random(),
+        tipo: tipoNorm.toUpperCase(),
+        quantidade: qtdNum,
+        codigoModelo,
+        produtoId: idVal,
+        produtoNome: prodAlvo ? (prodAlvo.nome || prodAlvo.descricao) : codigoModelo,
+        codigoLote: codigoLote.trim() || "PADRAO",
+        marca: marca.trim() || (prodAlvo?.categoria || "Geral"),
+        observacao: observacao.trim() || `Registro manual de ${tipoNorm}`,
+        dataMovimentacao: new Date().toISOString().replace("T", " ").substring(0, 19),
+        saldoApos: novoSaldo
+      };
+      const listaMovsAtualizada = salvarMovimentacaoStorage(novoMov);
+      setHistoricoMovimentacoes(listaMovsAtualizada);
+
+      dispararToast(
+        tipoNorm === "entrada" ? "Entrada confirmada!" : "Saída confirmada!",
+        `${qtdNum} un registradas com sucesso no lote "${codigoLote}".`,
+        "success"
+      );
+
+      await obterProdutos();
+    } catch (err) {
+      dispararToast("Erro ao registrar", err.message || "Falha na comunicação.", "error");
     } finally {
       setCarregando(false);
     }
@@ -747,15 +1104,38 @@ export default function App() {
 
   // Carregar dados de teste caso o backend ainda esteja offline
   const carregarMockParaTeste = () => {
-    setProdutos([
+    const mockProds = [
       { id: 1, codigo: 1, codigoModelo: "MOD-TEC-001", nome: "Teclado Mecânico RGB Switch Blue", categoria: "Periféricos", quantidade: 18, preco: 249.9 },
       { id: 2, codigo: 2, codigoModelo: "MOD-MOU-002", nome: "Mouse Gamer Óptico 16000 DPI", categoria: "Periféricos", quantidade: 32, preco: 139.5 },
       { id: 3, codigo: 3, codigoModelo: "MOD-MON-003", nome: "Monitor LED 24\" IPS Full HD 144Hz", categoria: "Monitores", quantidade: 4, preco: 849.0 },
       { id: 4, codigo: 4, codigoModelo: "MOD-CAB-004", nome: "Cabo HDMI 2.1 Ultra High Speed 2m", categoria: "Cabos & Acessórios", quantidade: 0, preco: 45.0 },
       { id: 5, codigo: 5, codigoModelo: "MOD-SSD-005", nome: "SSD NVMe M.2 1TB 3500MB/s", categoria: "Hardware", quantidade: 12, preco: 389.9 },
       { id: 6, codigo: 6, codigoModelo: "MOD-HEA-006", nome: "Headset Gamer 7.1 Surround", categoria: "Áudio", quantidade: 3, preco: 219.0 }
-    ]);
-    dispararToast("Dados de estoque carregados", "Exibindo itens de demonstração para testes de interface.", "info");
+    ];
+
+    const mockMovs = [
+      { id: 101, tipo: "ENTRADA", quantidade: 20, codigoModelo: "MOD-TEC-001", codigoLote: "LOT-2026-A", marca: "Redragon", produtoNome: "Teclado Mecânico RGB", dataMovimentacao: "2026-10-05 10:30:00", saldoApos: 20, observacao: "Entrada fornecedor" },
+      { id: 102, tipo: "SAIDA", quantidade: 2, codigoModelo: "MOD-TEC-001", codigoLote: "LOT-2026-A", marca: "Redragon", produtoNome: "Teclado Mecânico RGB", dataMovimentacao: "2026-10-06 09:15:00", saldoApos: 18, observacao: "Venda Balcão" },
+      { id: 103, tipo: "ENTRADA", quantidade: 35, codigoModelo: "MOD-MOU-002", codigoLote: "LOT-2026-B", marca: "Logitech", produtoNome: "Mouse Gamer Óptico", dataMovimentacao: "2026-10-04 14:00:00", saldoApos: 35, observacao: "NF 8821" },
+      { id: 104, tipo: "SAIDA", quantidade: 3, codigoModelo: "MOD-MOU-002", codigoLote: "LOT-2026-B", marca: "Logitech", produtoNome: "Mouse Gamer Óptico", dataMovimentacao: "2026-10-06 11:45:00", saldoApos: 32, observacao: "Venda Online" },
+      { id: 105, tipo: "ENTRADA", quantidade: 5, codigoModelo: "MOD-MON-003", codigoLote: "LOT-2026-C", marca: "LG", produtoNome: "Monitor LED 24\"", dataMovimentacao: "2026-10-03 16:20:00", saldoApos: 5, observacao: "Lote de importação" },
+      { id: 106, tipo: "SAIDA", quantidade: 1, codigoModelo: "MOD-MON-003", codigoLote: "LOT-2026-C", marca: "LG", produtoNome: "Monitor LED 24\"", dataMovimentacao: "2026-10-06 14:10:00", saldoApos: 4, observacao: "Venda Cliente VIP" },
+      { id: 107, tipo: "ENTRADA", quantidade: 10, codigoModelo: "MOD-CAB-004", codigoLote: "LOT-2026-D", marca: "Ugreen", produtoNome: "Cabo HDMI 2.1", dataMovimentacao: "2026-10-01 08:00:00", saldoApos: 10, observacao: "Entrada inicial" },
+      { id: 108, tipo: "SAIDA", quantidade: 10, codigoModelo: "MOD-CAB-004", codigoLote: "LOT-2026-D", marca: "Ugreen", produtoNome: "Cabo HDMI 2.1", dataMovimentacao: "2026-10-06 13:00:00", saldoApos: 0, observacao: "Queima de estoque" },
+      { id: 109, tipo: "ENTRADA", quantidade: 15, codigoModelo: "MOD-SSD-005", codigoLote: "LOT-2026-E", marca: "Kingston", produtoNome: "SSD NVMe M.2 1TB", dataMovimentacao: "2026-10-02 11:00:00", saldoApos: 15, observacao: "Remessa distribuidor" },
+      { id: 110, tipo: "SAIDA", quantidade: 3, codigoModelo: "MOD-SSD-005", codigoLote: "LOT-2026-E", marca: "Kingston", produtoNome: "SSD NVMe M.2 1TB", dataMovimentacao: "2026-10-05 17:30:00", saldoApos: 12, observacao: "Montagem de PCs" },
+      { id: 111, tipo: "ENTRADA", quantidade: 8, codigoModelo: "MOD-HEA-006", codigoLote: "LOT-2026-F", marca: "HyperX", produtoNome: "Headset Gamer 7.1", dataMovimentacao: "2026-10-04 15:45:00", saldoApos: 8, observacao: "Lote especial" },
+      { id: 112, tipo: "SAIDA", quantidade: 5, codigoModelo: "MOD-HEA-006", codigoLote: "LOT-2026-F", marca: "HyperX", produtoNome: "Headset Gamer 7.1", dataMovimentacao: "2026-10-06 10:00:00", saldoApos: 3, observacao: "Promoção relâmpago" }
+    ];
+
+    try {
+      localStorage.setItem(CHAVE_MOVIMENTACOES, JSON.stringify(mockMovs));
+    } catch {}
+
+    setHistoricoMovimentacoes(mockMovs);
+    const mockComTotais = aplicarMovimentacoesAosProdutos(mockProds, mockMovs);
+    setProdutos(mockComTotais);
+    dispararToast("Dados de estoque carregados", "Exibindo itens de demonstração com histórico completo de movimentações.", "info");
   };
 
   return (
@@ -1266,6 +1646,8 @@ export default function App() {
                       <th style={{ textAlign: "center", width: "115px" }}>Estoque</th>
                       <th style={{ textAlign: "right", width: "110px" }}>Preço Un.</th>
                       <th style={{ textAlign: "right", width: "115px" }}>Subtotal</th>
+                      <th style={{ textAlign: "center", width: "100px" }}>Entrada</th>
+                      <th style={{ textAlign: "center", width: "100px" }}>Saída</th>
                       <th style={{ width: "105px", textAlign: "right" }}>Ações</th>
                     </tr>
                   </thead>
@@ -1363,6 +1745,24 @@ export default function App() {
                           >
                             {formatarMoeda(subtotal)}
                           </td>
+                          <td style={{ textAlign: "center" }}>
+                            <span
+                              className="badge badge-success"
+                              style={{ minWidth: "48px", fontFamily: "var(--font-mono)", fontWeight: 600 }}
+                              title={`Total de entradas: ${item.entrada ?? 0} un`}
+                            >
+                              {item.entrada ?? 0}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: "center" }}>
+                            <span
+                              className="badge badge-danger"
+                              style={{ minWidth: "48px", fontFamily: "var(--font-mono)", fontWeight: 600 }}
+                              title={`Total de saídas: ${item.saida ?? 0} un`}
+                            >
+                              {item.saida ?? 0}
+                            </span>
+                          </td>
                           <td>
                             <div className="table-actions">
                               <button
@@ -1411,6 +1811,14 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* PAINEL DE MOVIMENTAÇÕES DE ESTOQUE */}
+        <MovimentacaoEstoque
+          produtos={produtos}
+          historicoMovimentacoes={historicoMovimentacoes}
+          onMovimentar={movimentarEstoque}
+          onRegistrarMovimentacaoAvancada={registrarMovimentacaoAvancada}
+        />
       </main>
 
       {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
