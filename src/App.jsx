@@ -2098,8 +2098,8 @@ export default function App() {
                           <td style={{ textAlign: "center", padding: "6px 8px" }}>
                             <div
                               style={{
-                                width: "40px",
-                                height: "40px",
+                                width: "80px",
+                                height: "80px",
                                 borderRadius: "6px",
                                 overflow: "hidden",
                                 display: "inline-flex",
