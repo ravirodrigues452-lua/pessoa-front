@@ -125,6 +125,13 @@ const Icons = {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M3 5v14M8 5v14M12 5v14M17 5v14M21 5v14M5 5v14M15 5v14" />
     </svg>
+  ),
+  Image: ({ size = 16, className = "" }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </svg>
   )
 };
 
@@ -136,16 +143,78 @@ const produtoVazio = {
   nome: "",
   categoria: "",
   quantidade: "",
-  preco: ""
+  preco: "",
+  foto: null
+};
+
+// ─── HELPERS PARA FOTO DO PRODUTO (localStorage, Base64) ──────────
+const CHAVE_FOTOS = "estoque_fotos_produtos_v1";
+
+const obterFotos = () => {
+  try {
+    const salvo = localStorage.getItem(CHAVE_FOTOS);
+    return salvo ? JSON.parse(salvo) : {};
+  } catch {
+    return {};
+  }
+};
+
+const salvarFoto = (codigoModelo, base64) => {
+  try {
+    const mapa = obterFotos();
+    mapa[String(codigoModelo)] = base64;
+    localStorage.setItem(CHAVE_FOTOS, JSON.stringify(mapa));
+  } catch {}
+};
+
+const removerFoto = (codigoModelo) => {
+  try {
+    const mapa = obterFotos();
+    delete mapa[String(codigoModelo)];
+    localStorage.setItem(CHAVE_FOTOS, JSON.stringify(mapa));
+  } catch {}
+};
+
+const obterFoto = (codigoModelo) => {
+  if (!codigoModelo) return null;
+  const mapa = obterFotos();
+  return mapa[String(codigoModelo)] || null;
 };
 
 // ─── GERENCIAMENTO E CÁLCULO DE MOVIMENTAÇÕES DE ESTOQUE ──────────
 const CHAVE_MOVIMENTACOES = "estoque_movimentacoes_log_v2";
+const CHAVE_REMOVIDAS = "estoque_movimentacoes_removidas_v1";
+
+const obterRemovidasStorage = () => {
+  try {
+    const salvo = localStorage.getItem(CHAVE_REMOVIDAS);
+    return salvo ? JSON.parse(salvo) : [];
+  } catch {
+    return [];
+  }
+};
+
+const registrarRemocaoStorage = (identificador) => {
+  try {
+    const lista = obterRemovidasStorage();
+    const str = String(identificador);
+    if (!lista.includes(str)) {
+      lista.push(str);
+      localStorage.setItem(CHAVE_REMOVIDAS, JSON.stringify(lista.slice(-1000)));
+    }
+  } catch {}
+};
 
 const obterMovimentacoesStorage = () => {
   try {
     const salvo = localStorage.getItem(CHAVE_MOVIMENTACOES);
-    return salvo ? JSON.parse(salvo) : [];
+    const lista = salvo ? JSON.parse(salvo) : [];
+    const removidas = new Set(obterRemovidasStorage());
+    return lista.filter((m) => {
+      const idStr = m.id ? String(m.id) : "";
+      const chave = `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+      return !removidas.has(idStr) && !removidas.has(chave);
+    });
   } catch {
     return [];
   }
@@ -162,20 +231,90 @@ const salvarMovimentacaoStorage = (novoMov) => {
   }
 };
 
+const removerMovimentacaoStorage = (idOuMov) => {
+  try {
+    const idStr = typeof idOuMov === "object" ? String(idOuMov.id ?? "") : String(idOuMov);
+    const chaveStr = typeof idOuMov === "object"
+      ? `${idOuMov.codigoModelo}-${idOuMov.tipo}-${idOuMov.quantidade}-${idOuMov.dataMovimentacao}`
+      : null;
+
+    if (idStr) registrarRemocaoStorage(idStr);
+    if (chaveStr) registrarRemocaoStorage(chaveStr);
+
+    const lista = obterMovimentacoesStorage();
+    const novaLista = lista.filter((m) => {
+      const mId = String(m.id ?? "");
+      const mChave = `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+      if (idStr && mId === idStr) return false;
+      if (chaveStr && mChave === chaveStr) return false;
+      return true;
+    });
+
+    localStorage.setItem(CHAVE_MOVIMENTACOES, JSON.stringify(novaLista));
+    return novaLista;
+  } catch {
+    return [];
+  }
+};
+
+const limparHistoricoStorageCompleto = (filtro = {}) => {
+  try {
+    const lista = obterMovimentacoesStorage();
+    let novaLista = [];
+
+    if (filtro.codigoModelo || (filtro.tipo && filtro.tipo !== "TODOS")) {
+      novaLista = lista.filter((m) => {
+        const matchModelo = filtro.codigoModelo
+          ? String(m.codigoModelo || "").toLowerCase() === String(filtro.codigoModelo).toLowerCase()
+          : true;
+        const matchTipo = filtro.tipo && filtro.tipo !== "TODOS"
+          ? String(m.tipo || "").toUpperCase() === String(filtro.tipo).toUpperCase()
+          : true;
+
+        const deveRemover = matchModelo && matchTipo;
+
+        if (deveRemover) {
+          if (m.id) registrarRemocaoStorage(m.id);
+          registrarRemocaoStorage(`${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`);
+          return false;
+        }
+        return true;
+      });
+      localStorage.setItem(CHAVE_MOVIMENTACOES, JSON.stringify(novaLista));
+    } else {
+      lista.forEach((m) => {
+        if (m.id) registrarRemocaoStorage(m.id);
+        registrarRemocaoStorage(`${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`);
+      });
+      localStorage.removeItem(CHAVE_MOVIMENTACOES);
+    }
+    return novaLista;
+  } catch {
+    return [];
+  }
+};
+
 const mesclarMovimentacoes = (movsApi = [], movsLocais = []) => {
+  const removidas = new Set(obterRemovidasStorage());
   const mapa = new Map();
   // Primeiro adiciona os locais
   movsLocais.forEach((m) => {
-    const chave = m.id ? String(m.id) : `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
-    mapa.set(chave, m);
+    const idStr = m.id ? String(m.id) : "";
+    const chave = `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+    if (!removidas.has(idStr) && !removidas.has(chave)) {
+      mapa.set(chave, m);
+    }
   });
   // Depois adiciona os vindos da API do backend
   movsApi.forEach((m) => {
-    const chave = m.id ? String(m.id) : `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
-    mapa.set(chave, {
-      ...m,
-      produtoNome: m.produtoNome || m.nome || m.descricao
-    });
+    const idStr = m.id ? String(m.id) : "";
+    const chave = `${m.codigoModelo}-${m.tipo}-${m.quantidade}-${m.dataMovimentacao}`;
+    if (!removidas.has(idStr) && !removidas.has(chave)) {
+      mapa.set(chave, {
+        ...m,
+        produtoNome: m.produtoNome || m.nome || m.descricao
+      });
+    }
   });
   return Array.from(mapa.values()).sort((a, b) => {
     return new Date(b.dataMovimentacao || 0) - new Date(a.dataMovimentacao || 0);
@@ -207,16 +346,13 @@ const aplicarMovimentacoesAosProdutos = (listaProdutos, listaMovimentacoes = [])
     });
 
     const qtdAtual = Number(p.quantidade || 0);
-    // Todo estoque atual deriva de entradas: entradas = saldo + saidas
-    const entradaCalculada = Math.max(somaEntradas, Math.max(0, qtdAtual) + somaSaidas);
-    const saidaCalculada = somaSaidas;
 
     return {
       ...p,
       quantidade: qtdAtual,
-      entrada: entradaCalculada,
-      saida: saidaCalculada,
-      fluxoLiquido: entradaCalculada - saidaCalculada
+      entrada: somaEntradas,
+      saida: somaSaidas,
+      fluxoLiquido: somaEntradas - somaSaidas
     };
   });
 };
@@ -505,6 +641,11 @@ export default function App() {
       return;
     }
 
+    // Salvar foto no localStorage (antes do cadastro)
+    if (produto.foto && produto.codigoModelo.trim()) {
+      salvarFoto(produto.codigoModelo.trim(), produto.foto);
+    }
+
     setCarregando(true);
     try {
       const qtdNum = produto.quantidade !== "" ? parseInt(produto.quantidade, 10) : 0;
@@ -590,6 +731,7 @@ export default function App() {
   // --- 3. SELECIONAR PRODUTO NA TABELA ---
   const selecionar = (p) => {
     const norm = normalizarProduto(p);
+    const fotoSalva = obterFoto(norm.codigoModelo);
     setProduto({
       id: norm.id,
       codigo: norm.codigo,
@@ -597,7 +739,8 @@ export default function App() {
       nome: norm.nome,
       categoria: norm.categoria,
       quantidade: norm.quantidade,
-      preco: norm.preco
+      preco: norm.preco,
+      foto: fotoSalva
     });
     setBotao(false); // Ativa modo Alterar / Remover / Cancelar
     dispararToast("Produto selecionado", `Editando: ${norm.nome} (#${norm.id})`, "info");
@@ -621,6 +764,11 @@ export default function App() {
     if (!produto.nome.trim()) {
       dispararToast("Campo obrigatório", "Descrição/nome do produto não pode ficar em branco.", "error");
       return;
+    }
+
+    // Salvar foto no localStorage ao alterar
+    if (produto.foto && produto.codigoModelo.trim()) {
+      salvarFoto(produto.codigoModelo.trim(), produto.foto);
     }
 
     setCarregando(true);
@@ -926,6 +1074,155 @@ export default function App() {
     }
   };
 
+  // --- REMOVER MOVIMENTAÇÃO INDIVIDUAL (ENTRADA OU SAÍDA) DO HISTÓRICO ---
+  const removerMovimentacao = async (movimento, { reverterEstoque = true } = {}) => {
+    if (!movimento) return;
+    setCarregando(true);
+    try {
+      const tipo = String(movimento.tipo || "").toUpperCase();
+      const qtd = Number(movimento.quantidade || 0);
+      const codModelo = String(movimento.codigoModelo || "");
+      const idProd = movimento.produtoId;
+
+      // 1. Tentar deletar no backend
+      if (movimento.id) {
+        const rotasDeleteMov = [
+          `/movimentacao/${movimento.id}`,
+          `/movimentacao/remover/${movimento.id}`,
+          `/movimentacoes/${movimento.id}`
+        ];
+        for (const rota of rotasDeleteMov) {
+          try {
+            const res = await fetchApi(rota, { method: "DELETE" });
+            if (res && (res.ok || res.status === 200 || res.status === 204)) break;
+          } catch {}
+        }
+      }
+
+      // 2. Reverter estoque do produto se solicitado
+      if (reverterEstoque && qtd > 0) {
+        const prodAlvo = produtos.find((p) => {
+          const pMod = String(p.codigoModelo || "").toLowerCase();
+          const pId = String(p.id ?? p.codigo ?? "");
+          return (codModelo && pMod && pMod === codModelo.toLowerCase()) || (idProd && pId && pId === String(idProd));
+        });
+
+        if (prodAlvo) {
+          const qtdAtual = Number(prodAlvo.quantidade || 0);
+          // Se a movimentação removida foi ENTRADA, o estoque volta (subtrai qtd)
+          // Se a movimentação removida foi SAIDA, o estoque volta (soma qtd)
+          const novaQtd = tipo === "ENTRADA" ? Math.max(0, qtdAtual - qtd) : qtdAtual + qtd;
+          const prodIdVal = prodAlvo.codigo !== "" ? prodAlvo.codigo : prodAlvo.id;
+
+          try {
+            const payload = {
+              ...prodAlvo,
+              id: Number(prodIdVal) || prodIdVal,
+              codigo: Number(prodIdVal) || prodIdVal,
+              quantidade: novaQtd
+            };
+            await fetchApi("/alterar", { method: "PUT", body: JSON.stringify(payload) });
+          } catch {}
+
+          if (String(produto.id) === String(prodIdVal) || String(produto.codigo) === String(prodIdVal)) {
+            setProduto((prev) => ({ ...prev, quantidade: novaQtd }));
+          }
+        }
+      }
+
+      // 3. Atualizar local storage e estado de movimentações
+      const listaAtualizada = removerMovimentacaoStorage(movimento);
+      setHistoricoMovimentacoes(listaAtualizada);
+
+      dispararToast(
+        "Movimentação removida!",
+        `Registro de ${tipo === "ENTRADA" ? "Entrada" : "Saída"} (${qtd} un) excluído do histórico.${reverterEstoque ? " Saldo do estoque ajustado." : ""}`,
+        "success"
+      );
+
+      await obterProdutos();
+    } catch (err) {
+      dispararToast("Erro ao remover", err.message || "Não foi possível remover a movimentação.", "error");
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  // --- LIMPAR HISTÓRICO DE MOVIMENTAÇÕES (TOTAL OU POR FILTRO) ---
+  const limparHistorico = async ({ reverterEstoque = false, filtroTipo = "TODOS", codigoModelo = null } = {}) => {
+    setCarregando(true);
+    try {
+      const listaAtual = historicoMovimentacoes;
+      const paraRemover = listaAtual.filter((m) => {
+        const matchMod = codigoModelo
+          ? String(m.codigoModelo || "").toLowerCase() === String(codigoModelo).toLowerCase()
+          : true;
+        const matchTipo = filtroTipo !== "TODOS"
+          ? String(m.tipo || "").toUpperCase() === String(filtroTipo).toUpperCase()
+          : true;
+        return matchMod && matchTipo;
+      });
+
+      if (paraRemover.length === 0) {
+        dispararToast("Nenhuma movimentação", "Não há registros correspondentes para limpar.", "info");
+        return;
+      }
+
+      // Se solicitado reverter estoque de todos os registros removidos
+      if (reverterEstoque) {
+        for (const mov of paraRemover) {
+          const prodAlvo = produtos.find((p) => {
+            const pMod = String(p.codigoModelo || "").toLowerCase();
+            const pId = String(p.id ?? p.codigo ?? "");
+            return (mov.codigoModelo && pMod && pMod === mov.codigoModelo.toLowerCase()) ||
+                   (mov.produtoId && pId && pId === String(mov.produtoId));
+          });
+
+          if (prodAlvo) {
+            const tipo = String(mov.tipo || "").toUpperCase();
+            const qtd = Number(mov.quantidade || 0);
+            const qtdAtual = Number(prodAlvo.quantidade || 0);
+            const novaQtd = tipo === "ENTRADA" ? Math.max(0, qtdAtual - qtd) : qtdAtual + qtd;
+            const prodIdVal = prodAlvo.codigo !== "" ? prodAlvo.codigo : prodAlvo.id;
+
+            try {
+              await fetchApi("/alterar", {
+                method: "PUT",
+                body: JSON.stringify({
+                  ...prodAlvo,
+                  id: Number(prodIdVal) || prodIdVal,
+                  codigo: Number(prodIdVal) || prodIdVal,
+                  quantidade: novaQtd
+                })
+              });
+              prodAlvo.quantidade = novaQtd;
+            } catch {}
+          }
+        }
+      }
+
+      // Tentar avisar backend se houver rota
+      try {
+        await fetchApi("/movimentacao/limpar", { method: "DELETE" });
+      } catch {}
+
+      const listaRestante = limparHistoricoStorageCompleto({ codigoModelo, tipo: filtroTipo });
+      setHistoricoMovimentacoes(listaRestante);
+
+      dispararToast(
+        "Histórico limpo!",
+        `${paraRemover.length} movimentação(ões) excluída(s) do histórico com sucesso.`,
+        "success"
+      );
+
+      await obterProdutos();
+    } catch (err) {
+      dispararToast("Erro ao limpar histórico", err.message || "Falha na operação.", "error");
+    } finally {
+      setCarregando(false);
+    }
+  };
+
   // --- 6. REMOVER PRODUTO (DELETE) ---
   const confirmarRemover = async () => {
     const idVal = produto.codigo !== "" ? produto.codigo : produto.id;
@@ -968,6 +1265,37 @@ export default function App() {
   const cancelar = () => {
     setProduto(produtoVazio);
     setBotao(true); // Volta para botão Cadastrar
+  };
+
+  // --- HANDLER DE FOTO DO PRODUTO ---
+  const handleFotoChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      dispararToast("Arquivo inválido", "Selecione um arquivo de imagem (JPG, PNG, WEBP, etc).", "error");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      dispararToast("Imagem muito grande", "O tamanho máximo permitido é 2MB.", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = ev.target.result;
+      setProduto((prev) => ({ ...prev, foto: base64 }));
+      // Se já temos um codigoModelo, salvar imediatamente no localStorage
+      if (produto.codigoModelo && produto.codigoModelo.trim()) {
+        salvarFoto(produto.codigoModelo.trim(), base64);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removerFotoProduto = () => {
+    setProduto((prev) => ({ ...prev, foto: null }));
+    if (produto.codigoModelo && produto.codigoModelo.trim()) {
+      removerFoto(produto.codigoModelo.trim());
+    }
   };
 
   // --- 8. FERRAMENTA DE DIAGNÓSTICO DE ENDPOINTS ---
@@ -1429,6 +1757,93 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* CAMPO: FOTO DO PRODUTO */}
+                <div className="form-group">
+                  <label className="form-label">
+                    <span>Foto do Produto</span>
+                    <span className="form-label-hint">Opcional · máx. 2MB</span>
+                  </label>
+                  <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                    {/* Miniatura da foto atual */}
+                    <div
+                      style={{
+                        width: "56px",
+                        height: "56px",
+                        borderRadius: "calc(var(--radius) - 0.25rem)",
+                        border: "1.5px dashed hsl(var(--border))",
+                        overflow: "hidden",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "var(--surface-subtle)",
+                        flexShrink: 0
+                      }}
+                    >
+                      {produto.foto ? (
+                        <img
+                          src={produto.foto}
+                          alt="Foto do produto"
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <Icons.Image size={22} style={{ color: "hsl(var(--muted-foreground))" }} />
+                      )}
+                    </div>
+                    {/* Botões de ação para foto */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", flex: 1 }}>
+                      <label
+                        htmlFor="input-foto-produto"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "0.4rem",
+                          cursor: "pointer",
+                          fontSize: "0.8125rem",
+                          fontWeight: 500,
+                          color: "hsl(var(--primary))",
+                          padding: "0.35rem 0.75rem",
+                          borderRadius: "calc(var(--radius) - 0.25rem)",
+                          border: "1px solid hsl(var(--border))",
+                          backgroundColor: "var(--surface)",
+                          transition: "background 0.15s",
+                          userSelect: "none"
+                        }}
+                      >
+                        <Icons.Image size={14} />
+                        {produto.foto ? "Trocar foto" : "Adicionar foto"}
+                        <input
+                          id="input-foto-produto"
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleFotoChange}
+                        />
+                      </label>
+                      {produto.foto && (
+                        <button
+                          type="button"
+                          onClick={removerFotoProduto}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.4rem",
+                            fontSize: "0.8125rem",
+                            fontWeight: 500,
+                            color: "hsl(var(--destructive))",
+                            padding: "0.35rem 0.75rem",
+                            borderRadius: "calc(var(--radius) - 0.25rem)",
+                            border: "1px solid hsla(var(--destructive), 0.3)",
+                            backgroundColor: "transparent",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <Icons.Trash size={13} /> Remover foto
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {/* MOVIMENTAÇÃO RÁPIDA DE ESTOQUE (QUANDO ESTÁ EDITANDO) */}
                 {!botao && (
                   <div
@@ -1639,6 +2054,7 @@ export default function App() {
                 <table className="shadcn-table">
                   <thead>
                     <tr>
+                      <th style={{ width: "56px", textAlign: "center" }}>Foto</th>
                       <th style={{ width: "65px" }}>Código</th>
                       <th style={{ width: "125px" }}>Cód. Modelo</th>
                       <th>Descrição do Produto</th>
@@ -1671,12 +2087,45 @@ export default function App() {
                       const esgotado = qtd <= 0;
                       const baixo = qtd > 0 && qtd <= 5;
 
+                      const fotoItem = obterFoto(item.codigoModelo);
+
                       return (
                         <tr
                           key={item.codigo ?? item.id ?? index}
                           className={estaSelecionado ? "row-selected" : ""}
                         >
-                          <td className="id-cell">#{identificador}</td>
+                          {/* COLUNA FOTO */}
+                          <td style={{ textAlign: "center", padding: "6px 8px" }}>
+                            <div
+                              style={{
+                                width: "40px",
+                                height: "40px",
+                                borderRadius: "6px",
+                                overflow: "hidden",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                backgroundColor: esgotado
+                                  ? "hsla(var(--destructive), 0.08)"
+                                  : baixo
+                                  ? "rgba(245,158,11,0.1)"
+                                  : "hsla(var(--primary), 0.07)",
+                                border: "1px solid hsl(var(--border))",
+                                flexShrink: 0
+                              }}
+                            >
+                              {fotoItem ? (
+                                <img
+                                  src={fotoItem}
+                                  alt={item.nome || "Produto"}
+                                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                                />
+                              ) : (
+                                <Icons.Package size={16} style={{ color: "hsl(var(--muted-foreground))" }} />
+                              )}
+                            </div>
+                          </td>
+                          <td className="id-cell" title={`ID no Banco: #${identificador}`}>#{index + 1}</td>
                           <td>
                             <span
                               style={{
@@ -1697,18 +2146,6 @@ export default function App() {
                           </td>
                           <td>
                             <div className="user-name-cell">
-                              <div
-                                className="user-avatar-placeholder"
-                                style={{
-                                  backgroundColor: esgotado
-                                    ? "hsla(var(--destructive), 0.1)"
-                                    : baixo
-                                    ? "rgba(245, 158, 11, 0.1)"
-                                    : "hsla(var(--primary), 0.08)"
-                                }}
-                              >
-                                <Icons.Package size={14} />
-                              </div>
                               <span style={{ fontWeight: 600 }}>{item.nome || item.descricao}</span>
                             </div>
                           </td>
@@ -1818,6 +2255,8 @@ export default function App() {
           historicoMovimentacoes={historicoMovimentacoes}
           onMovimentar={movimentarEstoque}
           onRegistrarMovimentacaoAvancada={registrarMovimentacaoAvancada}
+          onRemoverMovimentacao={removerMovimentacao}
+          onLimparHistorico={limparHistorico}
         />
       </main>
 

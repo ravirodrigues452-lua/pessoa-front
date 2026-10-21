@@ -104,6 +104,17 @@ const MoveIcons = {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M18 6 6 18M6 6l12 12" />
     </svg>
+  ),
+  Trash: ({ size = 15, className = "" }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6" />
+    </svg>
+  ),
+  RotateCcw: ({ size = 15, className = "" }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
   )
 };
 
@@ -112,7 +123,9 @@ function MovimentacaoEstoque({
   produtos = [],
   historicoMovimentacoes = [],
   onMovimentar,
-  onRegistrarMovimentacaoAvancada
+  onRegistrarMovimentacaoAvancada,
+  onRemoverMovimentacao,
+  onLimparHistorico
 }) {
   const [filtroTipo, setFiltroTipo] = useState("TODOS"); // TODOS | ENTRADA | SAIDA | CRITICO
   const [filtroCategoria, setFiltroCategoria] = useState("TODAS");
@@ -131,6 +144,18 @@ function MovimentacaoEstoque({
     codigoLote: "LOTE-2026-01",
     marca: "",
     observacao: ""
+  });
+
+  // Modal de remoção individual de movimentação
+  const [modalRemover, setModalRemover] = useState(null); // { mov: {...}, reverterEstoque: true }
+
+  // Modal de limpeza do histórico (total ou por modelo/tipo)
+  const [modalLimpar, setModalLimpar] = useState({
+    aberto: false,
+    tipo: "TODOS",
+    reverterEstoque: false,
+    codigoModelo: null,
+    nomeModelo: ""
   });
 
   // ─── Computar dados de movimentação para cada produto ───────────
@@ -490,6 +515,24 @@ function MovimentacaoEstoque({
               ? `${dadosFiltrados.length} ${dadosFiltrados.length === 1 ? "produto" : "produtos"}`
               : `${historicoFiltrado.length} ${historicoFiltrado.length === 1 ? "registro" : "registros"}`}
           </span>
+
+          {abaAtiva === "HISTORICO" && onLimparHistorico && historicoMovimentacoes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setModalLimpar({
+                aberto: true,
+                tipo: filtroTipo === "TODOS" ? "TODOS" : filtroTipo,
+                reverterEstoque: true,
+                codigoModelo: filtroModelo || null,
+                nomeModelo: filtroModelo || ""
+              })}
+              className="btn btn-outline btn-sm mov-btn-limpar-hist"
+              title="Limpar histórico de testes"
+            >
+              <MoveIcons.Trash size={13} />
+              Limpar Histórico
+            </button>
+          )}
         </div>
       </div>
 
@@ -732,18 +775,36 @@ function MovimentacaoEstoque({
                                   <span className="mov-sub-history-title">
                                     <MoveIcons.Clock size={13} /> Movimentações Recentes deste Item ({movsDesteProduto.length})
                                   </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => abrirModalComProduto(item.itemOriginal, "ENTRADA")}
-                                    className="btn btn-outline btn-xs"
-                                  >
-                                    <MoveIcons.Plus size={12} /> Registrar Movimentação neste Modelo
-                                  </button>
+                                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                                    {onLimparHistorico && movsDesteProduto.length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setModalLimpar({
+                                          aberto: true,
+                                          tipo: "TODOS",
+                                          reverterEstoque: true,
+                                          codigoModelo: item.codigoModelo,
+                                          nomeModelo: `${item.nome} (${item.codigoModelo})`
+                                        })}
+                                        className="btn btn-outline btn-xs mov-sub-history-clear-btn"
+                                        title={`Limpar histórico deste modelo`}
+                                      >
+                                        <MoveIcons.Trash size={12} /> Limpar Histórico do Item
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => abrirModalComProduto(item.itemOriginal, "ENTRADA")}
+                                      className="btn btn-outline btn-xs"
+                                    >
+                                      <MoveIcons.Plus size={12} /> Registrar Movimentação neste Modelo
+                                    </button>
+                                  </div>
                                 </div>
 
                                 {movsDesteProduto.length > 0 ? (
                                   <div className="mov-sub-history-list">
-                                    {movsDesteProduto.slice(0, 5).map((m, idx) => (
+                                    {movsDesteProduto.slice(0, 8).map((m, idx) => (
                                       <div key={m.id || idx} className="mov-sub-history-row">
                                         <span className={`badge ${m.tipo === "ENTRADA" ? "badge-success" : "badge-danger"}`}>
                                           {m.tipo === "ENTRADA" ? <MoveIcons.ArrowDownLeft size={11} /> : <MoveIcons.ArrowUpRight size={11} />}
@@ -754,6 +815,16 @@ function MovimentacaoEstoque({
                                         </span>
                                         <span className="mov-sub-history-data">{m.dataMovimentacao || "Recente"}</span>
                                         <span className="mov-sub-history-obs">{m.observacao || "Sem observação"}</span>
+                                        {onRemoverMovimentacao && (
+                                          <button
+                                            type="button"
+                                            className="mov-sub-history-del-btn"
+                                            onClick={() => setModalRemover({ mov: m, reverterEstoque: true })}
+                                            title={`Remover este registro de ${m.tipo === "ENTRADA" ? "Entrada" : "Saída"} (${m.quantidade} un)`}
+                                          >
+                                            <MoveIcons.Trash size={12} />
+                                          </button>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
@@ -802,6 +873,7 @@ function MovimentacaoEstoque({
                   <th style={{ width: "95px", textAlign: "center" }}>Quantidade</th>
                   <th style={{ width: "95px", textAlign: "center" }}>Saldo Após</th>
                   <th>Observação</th>
+                  <th style={{ width: "80px", textAlign: "center" }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -838,6 +910,18 @@ function MovimentacaoEstoque({
                     </td>
                     <td style={{ fontSize: "0.8125rem", color: "hsl(var(--muted-foreground))" }}>
                       {m.observacao || "—"}
+                    </td>
+                    <td style={{ textAlign: "center" }}>
+                      {onRemoverMovimentacao && (
+                        <button
+                          type="button"
+                          className="mov-btn-remover-mov"
+                          onClick={() => setModalRemover({ mov: m, reverterEstoque: true })}
+                          title={`Remover este registro de ${m.tipo === "ENTRADA" ? "Entrada" : "Saída"} (${m.quantidade} un)`}
+                        >
+                          <MoveIcons.Trash size={14} />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1011,6 +1095,224 @@ function MovimentacaoEstoque({
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ─── MODAL DE REMOÇÃO INDIVIDUAL DE MOVIMENTAÇÃO ─── */}
+      {modalRemover && modalRemover.mov && (
+        <div className="modal-overlay" onClick={() => setModalRemover(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "480px" }}>
+            <div className="card-header">
+              <h3 className="card-title" style={{ color: "hsl(var(--destructive))", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <MoveIcons.Trash size={18} /> Remover Registro do Histórico
+              </h3>
+              <button onClick={() => setModalRemover(null)} className="btn btn-ghost btn-icon">
+                <MoveIcons.X size={16} />
+              </button>
+            </div>
+
+            <div className="card-content">
+              <p style={{ fontSize: "0.875rem", marginBottom: "0.875rem", color: "hsl(var(--foreground))" }}>
+                Tem certeza que deseja remover este lançamento do histórico?
+              </p>
+
+              {/* Detalhes do registro selecionado */}
+              <div
+                style={{
+                  backgroundColor: "var(--surface-subtle)",
+                  padding: "0.875rem",
+                  borderRadius: "calc(var(--radius) - 0.25rem)",
+                  border: "1px solid hsl(var(--border))",
+                  marginBottom: "1rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.35rem",
+                  fontSize: "0.8125rem"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600 }}>Operação:</span>
+                  <span className={`badge ${modalRemover.mov.tipo === "ENTRADA" ? "badge-success" : "badge-danger"}`}>
+                    {modalRemover.mov.tipo === "ENTRADA" ? <MoveIcons.ArrowDownLeft size={11} /> : <MoveIcons.ArrowUpRight size={11} />}
+                    {modalRemover.mov.tipo === "ENTRADA" ? "Entrada" : "Saída"} de {modalRemover.mov.quantidade} un
+                  </span>
+                </div>
+                <div>
+                  <strong>Produto / Modelo:</strong> {modalRemover.mov.produtoNome || "Produto"} {modalRemover.mov.codigoModelo ? `[${modalRemover.mov.codigoModelo}]` : ""}
+                </div>
+                <div>
+                  <strong>Lote:</strong> {modalRemover.mov.codigoLote || "PADRAO"} | <strong>Marca:</strong> {modalRemover.mov.marca || "Geral"}
+                </div>
+                <div>
+                  <strong>Data / Hora:</strong> {modalRemover.mov.dataMovimentacao || "—"}
+                </div>
+                {modalRemover.mov.observacao && (
+                  <div>
+                    <strong>Observação:</strong> <em>{modalRemover.mov.observacao}</em>
+                  </div>
+                )}
+              </div>
+
+              {/* Opção para reverter saldo no estoque */}
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.625rem",
+                  padding: "0.75rem",
+                  borderRadius: "calc(var(--radius) - 0.25rem)",
+                  backgroundColor: "hsla(var(--primary), 0.05)",
+                  border: "1px solid hsla(var(--primary), 0.15)",
+                  cursor: "pointer",
+                  marginBottom: "1.25rem",
+                  userSelect: "none"
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={modalRemover.reverterEstoque}
+                  onChange={(e) => setModalRemover((prev) => ({ ...prev, reverterEstoque: e.target.checked }))}
+                  style={{ marginTop: "3px", cursor: "pointer" }}
+                />
+                <div style={{ fontSize: "0.8125rem" }}>
+                  <strong style={{ display: "block", color: "hsl(var(--foreground))" }}>
+                    Reverter também o saldo do produto no estoque
+                  </strong>
+                  <span style={{ color: "hsl(var(--muted-foreground))", fontSize: "0.75rem" }}>
+                    {modalRemover.mov.tipo === "ENTRADA"
+                      ? `Subtrairá ${modalRemover.mov.quantidade} un do saldo atual (desfazendo a entrada de teste).`
+                      : `Devolverá ${modalRemover.mov.quantidade} un ao saldo atual (desfazendo a saída de teste).`}
+                  </span>
+                </div>
+              </label>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.625rem" }}>
+                <button
+                  type="button"
+                  onClick={() => setModalRemover(null)}
+                  className="btn btn-outline"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (onRemoverMovimentacao && modalRemover.mov) {
+                      await onRemoverMovimentacao(modalRemover.mov, {
+                        reverterEstoque: modalRemover.reverterEstoque
+                      });
+                    }
+                    setModalRemover(null);
+                  }}
+                  className="btn btn-destructive"
+                >
+                  <MoveIcons.Trash size={15} />
+                  Remover Movimentação
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL DE LIMPEZA DE HISTÓRICO ─── */}
+      {modalLimpar && modalLimpar.aberto && (
+        <div
+          className="modal-overlay"
+          onClick={() => setModalLimpar({ aberto: false, tipo: "TODOS", reverterEstoque: false, codigoModelo: null, nomeModelo: "" })}
+        >
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "500px" }}>
+            <div className="card-header">
+              <h3 className="card-title" style={{ color: "hsl(var(--destructive))", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <MoveIcons.Trash size={18} /> Limpar Histórico de Testes
+              </h3>
+              <button
+                onClick={() => setModalLimpar({ aberto: false, tipo: "TODOS", reverterEstoque: false, codigoModelo: null, nomeModelo: "" })}
+                className="btn btn-ghost btn-icon"
+              >
+                <MoveIcons.X size={16} />
+              </button>
+            </div>
+
+            <div className="card-content">
+              <p style={{ fontSize: "0.875rem", marginBottom: "1rem", color: "hsl(var(--foreground))" }}>
+                {modalLimpar.nomeModelo
+                  ? `Deseja remover as movimentações do produto "${modalLimpar.nomeModelo}"?`
+                  : "Deseja remover os registros de entradas e saídas armazenados no histórico?"}
+              </p>
+
+              {/* Tipo de movimentações a limpar */}
+              <div className="form-group" style={{ marginBottom: "1rem" }}>
+                <label className="form-label">Quais lançamentos deseja remover?</label>
+                <select
+                  value={modalLimpar.tipo}
+                  onChange={(e) => setModalLimpar((prev) => ({ ...prev, tipo: e.target.value }))}
+                  className="shadcn-input"
+                >
+                  <option value="TODOS">Todas as movimentações (Entradas e Saídas)</option>
+                  <option value="ENTRADA">Apenas registros de Entradas</option>
+                  <option value="SAIDA">Apenas registros de Saídas</option>
+                </select>
+              </div>
+
+              {/* Reversão de saldos */}
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.625rem",
+                  padding: "0.75rem",
+                  borderRadius: "calc(var(--radius) - 0.25rem)",
+                  backgroundColor: "hsla(var(--primary), 0.05)",
+                  border: "1px solid hsla(var(--primary), 0.15)",
+                  cursor: "pointer",
+                  marginBottom: "1.25rem",
+                  userSelect: "none"
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={modalLimpar.reverterEstoque}
+                  onChange={(e) => setModalLimpar((prev) => ({ ...prev, reverterEstoque: e.target.checked }))}
+                  style={{ marginTop: "3px", cursor: "pointer" }}
+                />
+                <div style={{ fontSize: "0.8125rem" }}>
+                  <strong style={{ display: "block", color: "hsl(var(--foreground))" }}>
+                    Reverter saldos de estoque correspondentes
+                  </strong>
+                  <span style={{ color: "hsl(var(--muted-foreground))", fontSize: "0.75rem" }}>
+                    Desfaz as adições de estoque das entradas e restaura as baixas de estoque das saídas removidas.
+                  </span>
+                </div>
+              </label>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.625rem" }}>
+                <button
+                  type="button"
+                  onClick={() => setModalLimpar({ aberto: false, tipo: "TODOS", reverterEstoque: false, codigoModelo: null, nomeModelo: "" })}
+                  className="btn btn-outline"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (onLimparHistorico) {
+                      await onLimparHistorico({
+                        reverterEstoque: modalLimpar.reverterEstoque,
+                        filtroTipo: modalLimpar.tipo,
+                        codigoModelo: modalLimpar.codigoModelo
+                      });
+                    }
+                    setModalLimpar({ aberto: false, tipo: "TODOS", reverterEstoque: false, codigoModelo: null, nomeModelo: "" });
+                  }}
+                  className="btn btn-destructive"
+                >
+                  <MoveIcons.Trash size={15} />
+                  Confirmar e Limpar
+                </button>
+              </div>
             </div>
           </div>
         </div>

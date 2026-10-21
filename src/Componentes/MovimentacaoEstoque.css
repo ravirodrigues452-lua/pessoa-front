@@ -988,3 +988,83 @@
   font-style: italic;
   margin: 0.25rem 0;
 }
+
+/* ─── BOTÕES DE EXCLUSÃO DE MOVIMENTAÇÃO E LIMPEZA DE HISTÓRICO ─── */
+.mov-btn-remover-mov {
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: calc(var(--radius) - 0.25rem);
+  border: 1px solid hsla(var(--destructive), 0.25);
+  background-color: hsla(var(--destructive), 0.08);
+  color: hsl(var(--destructive));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.mov-btn-remover-mov:hover {
+  background-color: hsl(var(--destructive));
+  color: #fff;
+  border-color: hsl(var(--destructive));
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+}
+
+.mov-btn-limpar-hist {
+  color: hsl(var(--destructive)) !important;
+  border-color: hsla(var(--destructive), 0.35) !important;
+  background-color: hsla(var(--destructive), 0.05) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.35rem !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+}
+
+.mov-btn-limpar-hist:hover {
+  background-color: hsl(var(--destructive)) !important;
+  color: #fff !important;
+  border-color: hsl(var(--destructive)) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
+}
+
+.mov-sub-history-del-btn {
+  margin-left: 0.5rem;
+  width: 1.625rem;
+  height: 1.625rem;
+  border-radius: calc(var(--radius) - 0.35rem);
+  border: 1px solid hsla(var(--destructive), 0.25);
+  background-color: hsla(var(--destructive), 0.06);
+  color: hsl(var(--destructive));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.mov-sub-history-del-btn:hover {
+  background-color: hsl(var(--destructive));
+  color: #fff;
+  border-color: hsl(var(--destructive));
+  transform: scale(1.08);
+}
+
+.mov-sub-history-clear-btn {
+  color: hsl(var(--destructive)) !important;
+  border-color: hsla(var(--destructive), 0.3) !important;
+  background-color: transparent !important;
+  font-weight: 600 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.25rem !important;
+}
+
+.mov-sub-history-clear-btn:hover {
+  background-color: hsl(var(--destructive)) !important;
+  color: #fff !important;
+}
